@@ -1,0 +1,18 @@
+C lag comp
+
+for dedicated cs2d servers on linux.
+
+description:
+rewrite of Lua Lag Comp (gist.github.com/854210) in C as a lua library.
+
+usage:
+1. use make to compile.
+2. copy files to <cs2d folder>/sys/lua/.
+3. get a 32-bit liblua.so. usually you can just install a package from your
+   distro's repo. if not, you can compile from the source. contact me for help.
+4. start cs2d_dedicated like:
+	LD_PRELOAD=<path to liblua.so>/liblua.so <cs2d folder>/cs2d_dedicated
+
+contact:
+xfire apersonn
+email flood@lavabit.com
