@@ -8,7 +8,7 @@ ping = {}
 mode = {{}, {}, {}}
 buffer = {{}, {}}
 disabled = {}
-for i, v in ipairs({0, 47, 51, 72, 73, 75, 76, 77, 86, 87, 89, 253, 254, 255}) do
+for i, v in ipairs({0, 47, 48, 49, 51, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255}) do
 	disabled[v] = true
 end
 
