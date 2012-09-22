@@ -1,14 +1,18 @@
----------------------------------------------
---Lua Lag Compensation version 2.1 by FlooD--
----------------------------------------------
+-----------------------------------------------
+---Lua Lag Compensation version 2.2 by FlooD---
+-----------------------------------------------
+--[[       latest version always at
+raw.github.com/FloooD/C_lag_comp/master/llc.lua
+---------------------------------------------]]
 
 math.randomseed(os.time())
 
 ping = {}
 mode = {{}, {}, {}}
-buffer = {{}, {}}
+buf = {{}, {}}
 disabled = {}
-for i, v in ipairs({0, 47, 48, 49, 51, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255}) do
+no_lc={}
+for _, v in ipairs({0, 47, 48, 49, 51, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255}) do
 	disabled[v] = true
 end
 
@@ -21,16 +25,21 @@ function lc_reset(id)
 	mode[1][id] = 0
 	mode[2][id] = 0
 	mode[3][id] = 0
-	buffer[1][id] = {}
-	buffer[2][id] = {}
+	buf[1][id] = {}
+	buf[2][id] = {}
 	ping[id] = nil
+end
+addhook("die", "lc_reset")
+
+function lc_clear(id)
+	lc_reset(id)
+	no_lc[id] = false
 end
 
 for i = 1, 32 do
-	lc_reset(i)
+	lc_clear(i)
 end
-addhook("leave", "lc_reset")
-addhook("die", "lc_reset")
+addhook("leave", "lc_clear")
 
 function updateping(id)
 	local actualping = player(id, "ping")
@@ -52,29 +61,26 @@ function lc_second()
 end
 addhook("second", "lc_second")
 
-frame = 1
-BUFFER_SIZE = 15
-function updatebuffer()
-	frame = frame + 1
+MAX_FRAMES = 15
+function updatebuf()
 	for i in pairs(ping) do
-		buffer[1][i][frame], buffer[2][i][frame] = player(i, "x"), player(i, "y")
-		buffer[1][i][frame - BUFFER_SIZE], buffer[2][i][frame - BUFFER_SIZE] = nil, nil
+		for j = MAX_FRAMES, 1, -1 do
+			buf[1][i][j], buf[2][i][j] = buf[1][i][j-1], buf[2][i][j-1]
+		end
+		buf[1][i][0], buf[2][i][0] = player(i, "x"), player(i, "y")
 	end
 end
-addhook("always", "updatebuffer")
+addhook("always", "updatebuf")
 
 addhook("hit", "lc_hit", 1000)
 function lc_hit(v, id, wpn)
-	if disabled[wpn] or id == 0 then
-		return 0
-	end
-	return 1
+	return (disabled[wpn] or id == 0 or no_lc[id]) and 0 or 1
 end
 
 addhook("attack", "lc_attack")
 function lc_attack(id)
 	local wpn = player(id, "weapon")	
-	if disabled[wpn] then return end
+	if disabled[wpn] or no_lc[id] then return end
 	local rot = player(id, "rot")
 	local dmg = itemtype(wpn, "dmg") * game("mp_damagefactor")
 	if (wpn == 2 and mode[1][id] == 1) or (wpn == 39 and mode[2][id] == 1) then
@@ -102,6 +108,7 @@ addhook("attack2", "lc_attack2")
 function lc_attack2(id, m)
 	local wpn = player(id, "weapon")
 	if wpn == 50 or wpn == 69 then
+		if no_lc[id] then return end
 		simulate_attack(id, wpn, itemtype(wpn, "dmg_z1") * game("mp_damagefactor"))
 	elseif wpn == 2 then
 		mode[1][id] = m
@@ -174,10 +181,8 @@ function simulate_attack(id, wpn, dmg, rot)
 	if tile(tile_x, tile_y, "wall") then
 		end_x, end_y = intersect(end_x, end_y, topixel(tile_x) - start_x, topixel(tile_y) - start_y, 16)
 	end
-	local frames = math.floor(ping[id] / 20)
-	if frames > (BUFFER_SIZE - 1) then
-		frames = (BUFFER_SIZE - 1)
-	end
+	local frames = math.floor(0.5 + ping[id] / 20)
+	if frames > MAX_FRAMES then frames = MAX_FRAMES end
 	local victims = {}
 	if game("sv_friendlyfire") == "0" and game("sv_gamemode") ~= "1" then
 		for i in pairs(ping) do
@@ -192,7 +197,7 @@ function simulate_attack(id, wpn, dmg, rot)
 		victims[id] = nil
 	end
 	for i in pairs(victims) do
-		if intersect(end_x, end_y, buffer[1][i][frame - frames] - start_x, buffer[2][i][frame - frames] - start_y, 12) then
+		if intersect(end_x, end_y, buf[1][i][frames] - start_x, buf[2][i][frames] - start_y, 12) then
 			parse("sv_sound2 "..id.." player/hit"..math.ceil(3 * math.random())..".wav")
 			parse("sv_sound2 "..i.." player/hit"..math.ceil(3 * math.random())..".wav")
 			local newhealth
@@ -210,7 +215,7 @@ function simulate_attack(id, wpn, dmg, rot)
 			if newhealth > 0 then
 				parse("sethealth "..i.." "..newhealth)
 			else
-				parse("customkill "..id.." "..itemtype(wpn, "name").." "..i)
+				parse("customkill "..id.." \""..itemtype(wpn, "name").."\" "..i)
 			end
 		end
 	end
@@ -249,7 +254,12 @@ end
 addhook("serveraction", "lc_serveraction")
 function lc_serveraction(id, action)
 	if action == 1 then
-		msg2(id, "Lua Lag Compensation version 2.1")
+		msg2(id, "Lua Lag Compensation 2.2")
 		msg2(id, "Your current ping: "..player(id, "ping"))
+		msg2(id, "Current LC is "..(no_lc[id] and "off" or "on").." for yourself.")
+	elseif action == 2 then
+		no_lc[id] = not no_lc[id]
+		msg2(id, "LC toggled "..(no_lc[id] and "off" or "on").." for yourself.")
+		msg2(id, "Press the same button to toggle again.")
 	end
 end
