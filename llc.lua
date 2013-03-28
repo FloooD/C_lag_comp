@@ -12,7 +12,7 @@ mode = {{}, {}, {}}
 buf = {{}, {}}
 disabled = {}
 no_lc={}
-for _, v in ipairs({0, 47, 48, 49, 51, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255}) do
+for _, v in ipairs({0, 47, 48, 49, 51, 52, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255}) do
 	disabled[v] = true
 end
 
@@ -256,7 +256,7 @@ function lc_serveraction(id, action)
 	if action == 1 then
 		msg2(id, "Lua Lag Compensation 2.2")
 		msg2(id, "Your current ping: "..player(id, "ping"))
-		msg2(id, "Current LC is "..(no_lc[id] and "off" or "on").." for yourself.")
+		msg2(id, "Currently LC is "..(no_lc[id] and "off" or "on").." for yourself.")
 	elseif action == 2 then
 		no_lc[id] = not no_lc[id]
 		msg2(id, "LC toggled "..(no_lc[id] and "off" or "on").." for yourself.")
