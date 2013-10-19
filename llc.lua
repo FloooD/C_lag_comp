@@ -31,7 +31,7 @@ local function get_past_pos(id, frames)
 	if frames < 1 then return player(id, "x"), player(id, "y") end
 	if frames >= buf_size then frames = 0 end --0 == buf_size mod buf_size
 	local ind = (buf_index - frames) % buf_size + 1
-	return buf_x[ind], buf_y[ind]
+	return buf_x[ind][id], buf_y[ind][id]
 end
 LC_get_past_pos = get_past_pos --for other scripts to use.
 
