@@ -4,80 +4,92 @@
 --[[       latest version always at
 raw.github.com/FloooD/C_lag_comp/master/llc.lua
 ---------------------------------------------]]
-
-parse("mp_shotweakening 0")
 math.randomseed(os.time())
 
-LC = {}
-LC.VERSION = 5
+local offscreen_no_comp = false
+if offscreen_no_comp then parse("mp_shotweakening 0") end
 
+local glock_burst, famas_burst, zoom, no_lc = {}, {}, {}, {}
 local disabled_weapons = {}
-for _, v in ipairs({0, 47, 48, 49, 51, 52, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255}) do disabled_weapons[v] = true end
+for _, v in ipairs{0, 47, 48, 49, 51, 52, 72, 73, 75, 76, 77, 86, 87, 88, 89, 253, 254, 255} do disabled_weapons[v] = true end
 local special_armor = {}
-for i, v in ipairs({25, 50, 75, 50, 95}) do special_armor[200 + i] = 1 - (v / 100) end
+for i, v in ipairs{25, 50, 75, 50, 95} do special_armor[200 + i] = 1 - (v / 100) end
 
-local buf = {x = {}, y = {}} --circular buffer of players' past positions
-local buf_size = 16 --max compensated latency is 16 * 20 = 320
-local buf_start_index = buf_size
+--totally pointless "optimizations"
+local parse, player = parse, player
+local abs, floor, ceil, random, sin, cos, rad = math.abs, math.floor, math.ceil, math.random, math.sin, math.cos, math.rad
+
+local buf_x, buf_y = {}, {} --circular buffer
+local buf_size = 16
+local buf_index = buf_size
 for i = 1, buf_size do
-	buf.x[i] = {}
-	buf.y[i] = {}
+	buf_x[i] = {}
+	buf_y[i] = {}
 end
 
-local mode = {glock_burst = {}, famas_burst = {}, zoom = {}, no_lc = {}}
+local function get_past_pos(id, frames)
+	if frames < 1 then return player(id, "x"), player(id, "y") end
+	if frames >= buf_size then frames = 0 end --0 == buf_size mod buf_size
+	local ind = (buf_index - frames) % buf_size + 1
+	return buf_x[ind], buf_y[ind]
+end
+LC_get_past_pos = get_past_pos --for other scripts to use.
 
 function lc_reset(id)
-	mode.glock_burst[id] = 0
-	mode.famas_burst[id] = 0
-	mode.zoom[id] = 0
+	glock_burst[id] = 0
+	famas_burst[id] = 0
+	zoom[id] = 0
 	for i = 1, buf_size do
-		buf.x[i][id] = -1
-		buf.y[i][id] = -1
+		buf_x[i][id] = -1
+		buf_y[i][id] = -1
 	end
 end
 addhook("die", "lc_reset")
---addhook("spawn", "lc_reset")
 
 function lc_clear(id)
 	lc_reset(id)
-	mode.no_lc[id] = false
+	no_lc[id] = false
 end
 for id = 1, 32 do lc_clear(id) end
 addhook("leave", "lc_clear")
 
 function lc_update_buf()
-	buf_start_index = (buf_start_index % buf_size) + 1
+	buf_index = (buf_index % buf_size) + 1
 	for id = 1, 32 do
-		buf.x[buf_start_index][id], buf.y[buf_start_index][id] = player(id, "x"), player(id, "y")
+		buf_x[buf_index][id], buf_y[buf_index][id] = player(id, "x") or -1, player(id, "y") or -1
 	end
 end
 addhook("always", "lc_update_buf")
 
+local function off_screen(a, b)
+	return (abs(player(a, "x") - player(b, "x")) > 352) or (abs(player(a, "y") - player(b, "y")) > 272)
+end
+
 function lc_hit_bypass(v, id, wpn)
-	return (disabled_weapons[wpn] or id == 0 or mode.no_lc[id]) and 0 or 1
+	return (offscreen_no_comp and off_screen(v, id) or disabled_weapons[wpn] or id == 0 or no_lc[id]) and 0 or 1
 end
 addhook("hit", "lc_hit_bypass", 9001)
 
 local function intersect(ex, ey, bx, by, bl)
 	if not (bx and by) then return end
-	local cx, cy = (math.abs(bx) <= bl), (math.abs(by) <= bl)
+	local cx, cy = (abs(bx) <= bl), (abs(by) <= bl)
 	if cx and cy then
-		if math.abs(ex - bx) <= bl and math.abs(ey - by) <= bl then
+		if abs(ex - bx) <= bl and abs(ey - by) <= bl then
 			return ex, ey
 		end
 		bl = -bl
 	end
 	local ox = (ex >= 0) and bx - bl or bx + bl
 	local oy = (ey >= 0) and by - bl or by + bl
-	local flip
-	if (ex == 0 or (cx ~= cy or ((math.abs(ey * ox) >= math.abs(ex * oy)) == (bl < 0)))) and ((not cy) or cx) then
+	local flip = false
+	if (ex == 0 or (cx ~= cy or ((abs(ey * ox) >= abs(ex * oy)) == (bl < 0)))) and ((not cy) or cx) then
 		if ey == 0 then return end
 		ex, ey, bx, by, ox, oy = ey, ex, by, bx, oy, ox
 		flip = true
 	end
-	if (ox * ex) >= 0 and math.abs(ox) <= math.abs(ex) then
+	if (ox * ex) >= 0 and abs(ox) <= abs(ex) then
 		oy = ox * ey / ex
-		if math.abs(oy - by) <= math.abs(bl) then
+		if abs(oy - by) <= abs(bl) then
 			if flip then return oy, ox end
 			return ox, oy
 		end
@@ -85,13 +97,21 @@ local function intersect(ex, ey, bx, by, bl)
 end
 
 local function simulate_attack(id, wpn, dmg, rot)
+	local victims = {}
+	if game("sv_friendlyfire") == "0" and game("sv_gamemode") ~= "1" then
+		victims = player(0, (player(id, "team") == 1) and "team2living" or "team1living")
+	else
+		victims = player(0, "tableliving")
+	end
+	if #victims == 0 then return end
+
 	local range = itemtype(wpn, "range")
 	local start_x = player(id, "x")
 	local start_y = player(id, "y")
-	local end_x = (3 * range) * math.sin(math.rad(rot))
-	local end_y = -(3 * range) * math.cos(math.rad(rot))
-	local tile_x = math.floor(start_x / 32)
-	local tile_y = math.floor(start_y / 32)
+	local end_x = (3 * range) * sin(rad(rot))
+	local end_y = -(3 * range) * cos(rad(rot))
+	local tile_x = floor(start_x / 32)
+	local tile_y = floor(start_y / 32)
 	local inc_x = (end_x > 0 and 1) or (end_x < 0 and -1) or 0
 	local inc_y = (end_y > 0 and 1) or (end_y < 0 and -1) or 0
 
@@ -113,81 +133,65 @@ local function simulate_attack(id, wpn, dmg, rot)
 		end
 	end
 
-	local victims = {}
-	if game("sv_friendlyfire") == "0" and game("sv_gamemode") ~= "1" then
-		victims = player(0, "team"..((player(id, "team") == 1) and 2 or 1).."living")
-	else
-		victims = player(0, "tableliving")
-	end
-	if #victims < 1 then return end
-
-	local frames = math.ceil(player(id, "ping") / 20)
-	if frames > buf_size then frames = buf_size end
-	if frames ~= 0 then frames = (buf_start_index - frames) % buf_size + 1 end
-
+	local frames = ceil(player(id, "ping") / 20)
 	local wpn_name = itemtype(wpn, "name")
 	local wpn_img = "gfx/weapons/"..wpn_name:lower():gsub("[ %-]","").."_k.bmp"
 	local mp_kevlar = game("mp_kevlar")
 
 	for i = 1, #victims do
 		local v = victims[i]
-		if v ~= id then
-			local v_x, v_y
-			if frames == 0 then
-				v_x, v_y = player(v, "x"), player(v, "y")
-			else
-				v_x, v_y = buf.x[frames][v], buf.y[frames][v]
-			end
+		if (not offscreen_no_comp or not off_screen(v, id)) and v ~= id then
+			local v_x, v_y = get_past_pos(v, frames)
 			if intersect(end_x, end_y, v_x - start_x, v_y - start_y, 12) then
-				parse("sv_sound2 "..id.." player/hit"..math.ceil(3 * math.random())..".wav")
-				parse("sv_sound2 "..v.." player/hit"..math.ceil(3 * math.random())..".wav")
+				local rand = ceil(3 * random())
+				parse("sv_sound2 "..id.." player/hit"..rand..".wav")
+				parse("sv_sound2 "..v.." player/hit"..rand..".wav")
 				local old_armor = player(v, "armor")
 				local new_armor, new_health
 				if old_armor <= 200 then
 					new_armor = old_armor - dmg
 					if new_armor < 0 then new_armor = 0 end
-					new_health = player(v, "health") - dmg + math.floor(mp_kevlar * (old_armor - new_armor))
+					new_health = player(v, "health") - dmg + floor(mp_kevlar * (old_armor - new_armor))
 					parse("setarmor "..v.." "..new_armor)
 				else
-					new_health = player(v, "health") - math.floor(dmg * (special_armor[new_armor] or 1))
+					new_health = player(v, "health") - floor(dmg * (special_armor[new_armor] or 1))
 				end
 				if new_health > 0 then
 					parse("sethealth "..v.." "..new_health)
 				else
 					parse("customkill "..id.." \""..wpn_name..","..wpn_img.."\" "..v)
-					parse("sv_sound2 "..id.." player/die"..math.ceil(3 * math.random())..".wav")
-					parse("sv_sound2 "..v.." player/die"..math.ceil(3 * math.random())..".wav")
+					parse("sv_sound2 "..id.." player/die"..rand..".wav")
+					parse("sv_sound2 "..v.." player/die"..rand..".wav")
 				end
 			end
 		end
 	end
 end
 
-
 function lc_on_attack(id)
-	local wpn = player(id, "weapon")	
-	if disabled_weapons[wpn] or mode.no_lc[id] then return end
+	local wpn = player(id, "weapon")
+	if disabled_weapons[wpn] or no_lc[id] then return end
 	local dmg_factor = game("mp_damagefactor")
 	local dmg = itemtype(wpn, "dmg") * dmg_factor
 	local rot = player(id, "rot")
-	if (wpn == 2 and mode.glock_burst[id] == 1) or (wpn == 39 and mode.famas_burst[id] == 1) then
-		dmg = math.floor(dmg * 0.64 + 0.5)
-		simulate_attack(id, wpn, dmg, rot - 6 + 12 * math.random())
-		simulate_attack(id, wpn, dmg, rot + 6 + 8 * math.random())
-		simulate_attack(id, wpn, dmg, rot - 6 - 8 * math.random())
+	if (wpn == 2 and glock_burst[id] == 1) or (wpn == 39 and famas_burst[id] == 1) then
+		dmg = floor(dmg * 0.64 + 0.5)
+		simulate_attack(id, wpn, dmg, rot - 6 + 12 * random())
+		simulate_attack(id, wpn, dmg, rot + 6 + 8 * random())
+		simulate_attack(id, wpn, dmg, rot - 6 - 8 * random())
 		return
 	elseif wpn == 10 or wpn == 11 then
 		for _ = 1, 5 do
-			simulate_attack(id, wpn, dmg, rot - 20 + 40 * math.random())
+			simulate_attack(id, wpn, dmg, rot - 20 + 40 * random())
 		end
 		return
 	end
-	if mode.zoom[id] == 1 then
+	if zoom[id] == 1 then
 		dmg = itemtype(wpn, "dmg_z1") * dmg_factor
-	elseif mode.zoom[id] == 2 then
+	elseif zoom[id] == 2 then
 		dmg = itemtype(wpn, "dmg_z2") * dmg_factor
 	end
-	rot = rot + itemtype(wpn, "dispersion") * (2 * math.random() - 1)
+	rot = rot + itemtype(wpn, "dispersion") * (2 * random() - 1)
 	simulate_attack(id, wpn, dmg, rot)
 end
 addhook("attack", "lc_on_attack")
@@ -195,51 +199,56 @@ addhook("attack", "lc_on_attack")
 function lc_on_attack2(id, m)
 	local wpn = player(id, "weapon")
 	if wpn == 50 or wpn == 69 then
-		if mode.no_lc[id] then return end
+		if no_lc[id] then return end
 		simulate_attack(id, wpn, itemtype(wpn, "dmg_z1") * game("mp_damagefactor"), player(id, "rot"))
 	elseif wpn == 2 then
-		mode.glock_burst[id] = m
+		glock_burst[id] = m
 	elseif wpn == 39 then
-		mode.famas_burst[id] = m
+		famas_burst[id] = m
 	elseif wpn ~= 32 and wpn >= 31 and wpn <= 37 then
-		mode.zoom[id] = m
+		zoom[id] = m
 	end	
 end
 addhook("attack2", "lc_on_attack2")
 
 function lc_on_unzoom(id)
-	mode.zoom[id] = 0
+	zoom[id] = 0
 end
 addhook("reload", "lc_on_unzoom")
 addhook("select", "lc_on_unzoom")
 
 function lc_on_drop(id, iid, wpn)
-	mode.zoom[id] = 0
+	zoom[id] = 0
 	if wpn == 2 then
-		mode.glock_burst[id] = 0
+		glock_burst[id] = 0
 	elseif wpn == 39 then
-		mode.famas_burst[id] = 0
+		famas_burst[id] = 0
 	end
 end
 addhook("drop", "lc_on_drop")
 
 function lc_on_collect(id, _, wpn, _, _, m)
 	if wpn == 2 then
-		mode.glock_burst[id] = m
+		glock_burst[id] = m
 	elseif wpn == 39 then
-		mode.famas_burst[id] = m
+		famas_burst[id] = m
 	end
 end
 addhook("collect", "lc_on_collect")
 
 function lc_on_serveract(id, action)
 	if action == 1 then
-		msg2(id, string.char(169).."255255255".."Lua Lag Comp v5 by FlooD")
+		msg2(id, string.char(169).."255255255Lua Lag Comp v5 by FlooD")
 		msg2(id, "Your latency: "..player(id, "ping"))
-		msg2(id, "LC is "..(mode.no_lc[id] and "off" or "on").." for yourself.")
+		if no_lc[id] then
+			msg2(id, "LC is off for yourself.")
+		else
+			msg2(id, "LC is on for yourself.")
+			msg2(id, "Off-screen shots are "..(offscreen_no_comp and "not" or "").."lag compensated.")
+		end
 	elseif action == 2 then
-		mode.no_lc[id] = not mode.no_lc[id]
-		msg2(id, "LC toggled "..(mode.no_lc[id] and "off" or "on").." for yourself.")
+		no_lc[id] = not no_lc[id]
+		msg2(id, "LC toggled "..(no_lc[id] and "off" or "on").." for yourself.")
 		msg2(id, "Press the same button to toggle again.")
 	end
 end
